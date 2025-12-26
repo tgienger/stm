@@ -26,7 +26,6 @@ type App struct {
 	height      int
 }
 
-// Creates a new application
 func NewApp(database *db.DB) *App {
 	return &App{
 		db:          database,
@@ -36,7 +35,6 @@ func NewApp(database *db.DB) *App {
 }
 
 func (a *App) Init() tea.Cmd {
-	// Check for last opened project
 	lastProjectID, err := a.db.GetSetting("last_project_id")
 	if err == nil && lastProjectID != "" {
 		id, err := strconv.ParseInt(lastProjectID, 10, 64)
@@ -55,10 +53,8 @@ func (a *App) openProject(project models.Project) tea.Cmd {
 	a.currentView = ViewTasks
 	a.taskList = views.NewTaskListView(a.db, project)
 
-	// Save as last opened project
 	a.db.SetSetting("last_project_id", strconv.FormatInt(project.ID, 10))
 
-	// Initialize task list with window size
 	return tea.Batch(
 		a.taskList.Init(),
 		func() tea.Msg {
@@ -72,7 +68,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		// Always update project list size since it persists
 		a.projectList.Update(msg)
 
 	case views.SelectedProject:
