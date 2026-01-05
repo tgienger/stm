@@ -16,6 +16,7 @@ A keyboard-driven terminal UI (TUI) for managing projects and tasks. Built with 
 - **Completed Tasks** - Toggle between active and completed task views
 - **Unsaved Changes Protection** - Confirmation prompt when discarding edits
 - **Keyboard-Driven** - Full vim-style navigation (hjkl)
+- **Neovim Plugin** - [stm.nvim](https://github.com/tgienger/stm.nvim) for seamless integration with Neovim
 
 ## TODO
 - Thinking...
