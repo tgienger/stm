@@ -87,6 +87,14 @@ type TaskListView struct {
 	deleteTargetID   int64
 	deleteTargetName string
 
+	// Discard changes confirmation
+	confirmingDiscard bool
+	originalTitle     string
+	originalDesc      string
+	originalNotes     string
+	originalPriority  string
+	originalTags      []int64
+
 	// Show completed tasks mode
 	showingCompleted bool   // true when viewing only completed tasks
 	preCompletedTag  *int64 // saved tag filter before toggling to completed view
@@ -251,6 +259,10 @@ func (v *TaskListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if v.confirmingDelete {
 			return v.updateConfirmDelete(msg)
+		}
+
+		if v.confirmingDiscard {
+			return v.updateConfirmDiscard(msg)
 		}
 
 		if v.editing {
@@ -453,6 +465,25 @@ func (v *TaskListView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return v, nil
 }
 
+func (v *TaskListView) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Discard changes and close the form
+		v.confirmingDiscard = false
+		v.editing = false
+		return v, nil
+	case "s", "S":
+		// Save and close
+		v.confirmingDiscard = false
+		return v, v.saveTask()
+	case "n", "N", "esc":
+		// Cancel and return to editing
+		v.confirmingDiscard = false
+		return v, nil
+	}
+	return v, nil
+}
+
 func (v *TaskListView) updateViewingTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle comment input mode
 	if v.commentInputFocused {
@@ -552,6 +583,10 @@ func (v *TaskListView) updateAssigningTags(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 func (v *TaskListView) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, v.keys.Back):
+		if v.hasUnsavedChanges() {
+			v.confirmingDiscard = true
+			return v, nil
+		}
 		v.editing = false
 		return v, nil
 
@@ -683,6 +718,13 @@ func (v *TaskListView) startNewTask() {
 	v.editNotes.Reset()
 	v.editPriority.SetValue("0")
 	v.updateEditFocus()
+
+	// Store original values for change detection
+	v.originalTitle = ""
+	v.originalDesc = ""
+	v.originalNotes = ""
+	v.originalPriority = "0"
+	v.originalTags = []int64{}
 }
 
 func (v *TaskListView) startEditTask(task models.Task) {
@@ -700,6 +742,40 @@ func (v *TaskListView) startEditTask(task models.Task) {
 	v.editNotes.SetValue(task.Notes)
 	v.editPriority.SetValue(fmt.Sprintf("%d", task.Priority))
 	v.updateEditFocus()
+
+	// Store original values for change detection
+	v.originalTitle = task.Title
+	v.originalDesc = task.Description
+	v.originalNotes = task.Notes
+	v.originalPriority = fmt.Sprintf("%d", task.Priority)
+	v.originalTags = make([]int64, len(task.Tags))
+	copy(v.originalTags, v.editTags)
+}
+
+// hasUnsavedChanges checks if any form fields have been modified from their original values
+func (v *TaskListView) hasUnsavedChanges() bool {
+	if v.editTitle.Value() != v.originalTitle {
+		return true
+	}
+	if v.editDesc.Value() != v.originalDesc {
+		return true
+	}
+	if v.editNotes.Value() != v.originalNotes {
+		return true
+	}
+	if v.editPriority.Value() != v.originalPriority {
+		return true
+	}
+	// Check if tags have changed
+	if len(v.editTags) != len(v.originalTags) {
+		return true
+	}
+	for i, tagID := range v.editTags {
+		if tagID != v.originalTags[i] {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *TaskListView) updateEditFocus() {
@@ -844,6 +920,10 @@ func (v *TaskListView) View() string {
 
 	if v.confirmingDelete {
 		return v.renderDeleteConfirm()
+	}
+
+	if v.confirmingDiscard {
+		return v.renderDiscardConfirm()
 	}
 
 	if v.editing {
@@ -1015,7 +1095,7 @@ func (v *TaskListView) renderTaskItem(task models.Task, selected bool) string {
 	if len(task.Tags) > 0 {
 		var tagStrs []string
 		for _, tag := range task.Tags {
-			tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color))//s.Tag.Background(lipgloss.Color(tag.Color)).Foreground(lipgloss.Color("#1a1b26"))
+			tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color)) //s.Tag.Background(lipgloss.Color(tag.Color)).Foreground(lipgloss.Color("#1a1b26"))
 			tagStrs = append(tagStrs, tagStyle.Render(tag.Name))
 		}
 		tagsLine = strings.Join(tagStrs, " ")
@@ -1287,6 +1367,30 @@ func (v *TaskListView) renderDeleteConfirm() string {
 	return styles.CenterView(centered, v.width, v.height)
 }
 
+func (v *TaskListView) renderDiscardConfirm() string {
+	s := v.styles
+	contentWidth := styles.ContentWidth(v.width)
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		s.Title.Foreground(styles.Current.Warning).Render("Discard unsaved changes?"),
+		"",
+		"",
+		lipgloss.JoinHorizontal(lipgloss.Center,
+			s.ButtonPrimary.Render(" Y - Discard "),
+			"  ",
+			s.Button.Render(" S - Save "),
+			"  ",
+			s.Button.Render(" N - Cancel "),
+		),
+	)
+
+	centered := lipgloss.Place(contentWidth, v.height,
+		lipgloss.Center, lipgloss.Center,
+		content,
+	)
+	return styles.CenterView(centered, v.width, v.height)
+}
+
 func (v *TaskListView) renderTaskView() string {
 	if len(v.tasks) == 0 || v.cursor >= len(v.tasks) {
 		return ""
@@ -1305,7 +1409,7 @@ func (v *TaskListView) renderTaskView() string {
 	// Tags display
 	var tagStrs []string
 	for _, tag := range task.Tags {
-		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color))//s.Tag.Background(lipgloss.Color(tag.Color)).Foreground(lipgloss.Color("#1a1b26"))
+		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color)) //s.Tag.Background(lipgloss.Color(tag.Color)).Foreground(lipgloss.Color("#1a1b26"))
 		tagStrs = append(tagStrs, tagStyle.Render(tag.Name))
 	}
 	tagsLine := "None"

@@ -75,6 +75,11 @@ type ProjectListView struct {
 	newDesc          textinput.Model
 	focusIdx         int // 0=name, 1=desc, 2=confirm
 
+	// Discard changes confirmation
+	confirmingDiscard bool
+	originalName      string
+	originalDesc      string
+
 	// Help popup (shown with ? at narrow widths)
 	showHelpPopup bool
 }
@@ -171,6 +176,10 @@ func (v *ProjectListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.updateConfirmDelete(msg)
 		}
 
+		if v.confirmingDiscard {
+			return v.updateConfirmDiscard(msg)
+		}
+
 		if v.creating {
 			return v.updateCreating(msg)
 		}
@@ -187,6 +196,9 @@ func (v *ProjectListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.newName.Reset()
 			v.newDesc.Reset()
 			v.newName.Focus()
+			// Store original values for change detection
+			v.originalName = ""
+			v.originalDesc = ""
 			return v, textinput.Blink
 		case msg.String() == "?":
 			v.showHelpPopup = true
@@ -228,9 +240,42 @@ func (v *ProjectListView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cm
 	return v, nil
 }
 
+func (v *ProjectListView) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Discard changes and close the form
+		v.confirmingDiscard = false
+		v.creating = false
+		return v, nil
+	case "s", "S":
+		// Save and close
+		v.confirmingDiscard = false
+		name := strings.TrimSpace(v.newName.Value())
+		if name != "" {
+			project, err := v.db.CreateProject(name, strings.TrimSpace(v.newDesc.Value()))
+			if err == nil {
+				v.creating = false
+				return v, func() tea.Msg {
+					return SelectedProject{Project: *project}
+				}
+			}
+		}
+		return v, nil
+	case "n", "N", "esc":
+		// Cancel and return to creating
+		v.confirmingDiscard = false
+		return v, nil
+	}
+	return v, nil
+}
+
 func (v *ProjectListView) updateCreating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, v.keys.Back):
+		if v.hasUnsavedChanges() {
+			v.confirmingDiscard = true
+			return v, nil
+		}
 		v.creating = false
 		return v, nil
 
@@ -300,6 +345,11 @@ func (v *ProjectListView) updateFocus() {
 	}
 }
 
+// hasUnsavedChanges checks if any form fields have been modified from their original values
+func (v *ProjectListView) hasUnsavedChanges() bool {
+	return v.newName.Value() != v.originalName || v.newDesc.Value() != v.originalDesc
+}
+
 // View renders the view
 func (v *ProjectListView) View() string {
 	if v.showHelpPopup {
@@ -308,6 +358,10 @@ func (v *ProjectListView) View() string {
 
 	if v.confirmingDelete {
 		return v.renderDeleteConfirm()
+	}
+
+	if v.confirmingDiscard {
+		return v.renderDiscardConfirm()
 	}
 
 	if v.creating {
@@ -384,6 +438,30 @@ func (v *ProjectListView) renderCreateForm() string {
 	centered := lipgloss.Place(contentWidth, v.height,
 		lipgloss.Center, lipgloss.Center,
 		form,
+	)
+	return styles.CenterView(centered, v.width, v.height)
+}
+
+func (v *ProjectListView) renderDiscardConfirm() string {
+	s := v.styles
+	contentWidth := styles.ContentWidth(v.width)
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		s.Title.Foreground(styles.Current.Warning).Render("Discard unsaved changes?"),
+		"",
+		"",
+		lipgloss.JoinHorizontal(lipgloss.Center,
+			s.ButtonPrimary.Render(" Y - Discard "),
+			"  ",
+			s.Button.Render(" S - Save "),
+			"  ",
+			s.Button.Render(" N - Cancel "),
+		),
+	)
+
+	centered := lipgloss.Place(contentWidth, v.height,
+		lipgloss.Center, lipgloss.Center,
+		content,
 	)
 	return styles.CenterView(centered, v.width, v.height)
 }
