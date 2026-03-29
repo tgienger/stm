@@ -1,62 +1,60 @@
 package ui
 
 import (
-	"strconv"
-
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/tgienger/stm/internal/db"
+	"github.com/tgienger/stm/internal/fizzy"
 	"github.com/tgienger/stm/internal/models"
 	"github.com/tgienger/stm/internal/ui/views"
 )
 
-// Currently active view
 type View int
 
 const (
-	ViewProjects View = iota
-	ViewTasks
+	ViewBoards View = iota
+	ViewCards
 )
 
 type App struct {
-	db          *db.DB
+	fizzy       *fizzy.Fizzy
+	settings    *fizzy.Settings
 	currentView View
-	projectList *views.ProjectListView
-	taskList    *views.TaskListView
+	boardList   *views.BoardListView
+	cardList    *views.CardListView
 	width       int
 	height      int
 }
 
-func NewApp(database *db.DB) *App {
+type initialBoardsLoadedMsg struct {
+	boards []models.Board
+	err    error
+}
+
+func NewApp(f *fizzy.Fizzy, s *fizzy.Settings) *App {
 	return &App{
-		db:          database,
-		currentView: ViewProjects,
-		projectList: views.NewProjectListView(database),
+		fizzy:       f,
+		settings:    s,
+		currentView: ViewBoards,
+		boardList:   views.NewBoardListView(f),
 	}
 }
 
 func (a *App) Init() tea.Cmd {
-	lastProjectID, err := a.db.GetSetting("last_project_id")
-	if err == nil && lastProjectID != "" {
-		id, err := strconv.ParseInt(lastProjectID, 10, 64)
-		if err == nil {
-			project, err := a.db.GetProject(id)
-			if err == nil {
-				return a.openProject(*project)
-			}
-		}
-	}
-
-	return a.projectList.Init()
+	return a.loadInitialBoards
 }
 
-func (a *App) openProject(project models.Project) tea.Cmd {
-	a.currentView = ViewTasks
-	a.taskList = views.NewTaskListView(a.db, project)
+func (a *App) loadInitialBoards() tea.Msg {
+	boards, err := a.fizzy.ListBoards()
+	return initialBoardsLoadedMsg{boards: boards, err: err}
+}
 
-	a.db.SetSetting("last_project_id", strconv.FormatInt(project.ID, 10))
+func (a *App) openBoard(board models.Board) tea.Cmd {
+	a.currentView = ViewCards
+	a.cardList = views.NewCardListView(a.fizzy, a.settings, board)
+
+	_ = a.settings.Set("last_board_id", board.ID)
 
 	return tea.Batch(
-		a.taskList.Init(),
+		a.cardList.Init(),
 		func() tea.Msg {
 			return tea.WindowSizeMsg{Width: a.width, Height: a.height}
 		},
@@ -68,16 +66,36 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.projectList.Update(msg)
+		a.boardList.Update(msg)
 
-	case views.SelectedProject:
-		return a, a.openProject(msg.Project)
+	case initialBoardsLoadedMsg:
+		if msg.err != nil {
+			return a, nil
+		}
 
-	case views.BackToProjects:
-		a.currentView = ViewProjects
-		a.db.SetSetting("last_project_id", "")
+		a.boardList.SetBoards(msg.boards)
+
+		lastBoardID := a.settings.Get("last_board_id")
+		if lastBoardID == "" {
+			return a, nil
+		}
+
+		for _, board := range msg.boards {
+			if board.ID == lastBoardID {
+				return a, a.openBoard(board)
+			}
+		}
+
+		_ = a.settings.Set("last_board_id", "")
+		return a, nil
+
+	case views.SelectedBoard:
+		return a, a.openBoard(msg.Board)
+
+	case views.BackToBoards:
+		a.currentView = ViewBoards
 		return a, tea.Batch(
-			a.projectList.Init(),
+			a.boardList.Init(),
 			func() tea.Msg {
 				return tea.WindowSizeMsg{Width: a.width, Height: a.height}
 			},
@@ -86,10 +104,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	switch a.currentView {
-	case ViewProjects:
-		_, cmd = a.projectList.Update(msg)
-	case ViewTasks:
-		_, cmd = a.taskList.Update(msg)
+	case ViewBoards:
+		_, cmd = a.boardList.Update(msg)
+	case ViewCards:
+		_, cmd = a.cardList.Update(msg)
 	}
 
 	return a, cmd
@@ -97,10 +115,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) View() string {
 	switch a.currentView {
-	case ViewTasks:
-		if a.taskList != nil {
-			return a.taskList.View()
+	case ViewCards:
+		if a.cardList != nil {
+			return a.cardList.View()
 		}
 	}
-	return a.projectList.View()
+	return a.boardList.View()
 }

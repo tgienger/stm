@@ -10,31 +10,31 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/tgienger/stm/internal/db"
+	"github.com/tgienger/stm/internal/fizzy"
 	"github.com/tgienger/stm/internal/models"
 	"github.com/tgienger/stm/internal/ui/keys"
 	"github.com/tgienger/stm/internal/ui/styles"
 )
 
-type projectItem struct {
-	project models.Project
+type boardItem struct {
+	board models.Board
 }
 
-func (i projectItem) Title() string       { return i.project.Title }
-func (i projectItem) Description() string { return i.project.Description }
-func (i projectItem) FilterValue() string { return i.project.Title }
+func (i boardItem) Title() string       { return i.board.Name }
+func (i boardItem) Description() string { return "" }
+func (i boardItem) FilterValue() string { return i.board.Name }
 
-type projectDelegate struct {
+type boardDelegate struct {
 	styles *styles.Styles
 	width  int
 }
 
-func (d projectDelegate) Height() int                               { return 2 }
-func (d projectDelegate) Spacing() int                              { return 1 }
-func (d projectDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd { return nil }
+func (d boardDelegate) Height() int                               { return 2 }
+func (d boardDelegate) Spacing() int                              { return 1 }
+func (d boardDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd { return nil }
 
-func (d projectDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	p, ok := item.(projectItem)
+func (d boardDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	b, ok := item.(boardItem)
 	if !ok {
 		return
 	}
@@ -51,17 +51,16 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		descStyle = d.styles.ListItem.Foreground(styles.Current.ForegroundDim).Width(width)
 	}
 
-	title := titleStyle.Render(p.Title())
-	desc := descStyle.Render(p.Description())
+	title := titleStyle.Render(b.Title())
+	desc := descStyle.Render(b.Description())
 
 	fmt.Fprintf(w, "%s\n%s", title, desc)
 }
 
-type ProjectListView struct {
-	db               *db.DB
+type BoardListView struct {
+	fizzy            *fizzy.Fizzy
 	list             list.Model
-	delegate         *projectDelegate
-	filter           textinput.Model
+	delegate         *boardDelegate
 	styles           *styles.Styles
 	keys             keys.KeyMap
 	width            int
@@ -69,104 +68,87 @@ type ProjectListView struct {
 	creating         bool
 	loaded           bool
 	confirmingDelete bool
-	deleteTargetID   int64
+	deleteTargetID   string
 	deleteTargetName string
 	newName          textinput.Model
-	newDesc          textinput.Model
-	focusIdx         int // 0=name, 1=desc, 2=confirm
+	focusIdx         int
 
-	// Discard changes confirmation
 	confirmingDiscard bool
 	originalName      string
-	originalDesc      string
 
-	// Help popup (shown with ? at narrow widths)
 	showHelpPopup bool
 }
 
-func NewProjectListView(database *db.DB) *ProjectListView {
+func NewBoardListView(f *fizzy.Fizzy) *BoardListView {
 	s := styles.NewStyles()
 
-	filter := textinput.New()
-	filter.Placeholder = "Filter projects..."
-	filter.CharLimit = 100
-
 	newName := textinput.New()
-	newName.Placeholder = "Project name"
+	newName.Placeholder = "Board name"
 	newName.CharLimit = 100
 
-	newDesc := textinput.New()
-	newDesc.Placeholder = "Description (optional)"
-	newDesc.CharLimit = 100
-	// newDesc.CharLimit = 500
-	// newDesc.SetWidth(50)
-	// newDesc.SetHeight(3)
-	// newDesc.ShowLineNumbers = false
-
-	// Setup custom delegate
-	delegate := &projectDelegate{styles: s, width: 80}
+	delegate := &boardDelegate{styles: s, width: 80}
 
 	l := list.New([]list.Item{}, delegate, 0, 0)
-	l.Title = "Projects"
+	l.Title = "Boards"
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = s.Title
 	l.SetShowHelp(false)
 
-	return &ProjectListView{
-		db:       database,
+	return &BoardListView{
+		fizzy:    f,
 		list:     l,
 		delegate: delegate,
-		filter:   filter,
 		styles:   s,
 		keys:     keys.DefaultKeyMap(),
 		newName:  newName,
-		newDesc:  newDesc,
 	}
 }
 
-func (v *ProjectListView) Init() tea.Cmd {
-	return v.loadProjects
+func (v *BoardListView) Init() tea.Cmd {
+	return v.loadBoards
 }
 
-func (v *ProjectListView) loadProjects() tea.Msg {
-	projects, err := v.db.ListProjects()
+func (v *BoardListView) loadBoards() tea.Msg {
+	boards, err := v.fizzy.ListBoards()
 	if err != nil {
 		return err
 	}
-	return projectsLoadedMsg{projects: projects}
+	return boardsLoadedMsg{boards: boards}
 }
 
-type projectsLoadedMsg struct {
-	projects []models.Project
+func (v *BoardListView) SetBoards(boards []models.Board) {
+	items := make([]list.Item, len(boards))
+	for i, b := range boards {
+		items[i] = boardItem{board: b}
+	}
+	v.list.SetItems(items)
+	v.loaded = true
 }
 
-type SelectedProject struct {
-	Project models.Project
+type boardsLoadedMsg struct {
+	boards []models.Board
 }
 
-func (v *ProjectListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+type SelectedBoard struct {
+	Board models.Board
+}
+
+func (v *BoardListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
 		v.height = msg.Height
-		// Use content width (capped at MaxWidth) for internal layout
 		contentWidth := styles.ContentWidth(msg.Width)
 		v.delegate.width = contentWidth
 		v.list.SetSize(contentWidth-4, msg.Height-6)
 		return v, nil
 
-	case projectsLoadedMsg:
-		items := make([]list.Item, len(msg.projects))
-		for i, p := range msg.projects {
-			items[i] = projectItem{project: p}
-		}
-		v.list.SetItems(items)
-		v.loaded = true
+	case boardsLoadedMsg:
+		v.SetBoards(msg.boards)
 		return v, nil
 
 	case tea.KeyMsg:
-		// Handle help popup first - any key closes it
 		if v.showHelpPopup {
 			v.showHelpPopup = false
 			return v, nil
@@ -188,32 +170,28 @@ func (v *ProjectListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, v.keys.Quit):
 			return v, tea.Quit
 		case key.Matches(msg, v.keys.Back):
-			// Don't quit on escape/backspace in project list - only q quits
 			return v, nil
 		case key.Matches(msg, v.keys.New):
 			v.creating = true
 			v.focusIdx = 0
 			v.newName.Reset()
-			v.newDesc.Reset()
 			v.newName.Focus()
-			// Store original values for change detection
 			v.originalName = ""
-			v.originalDesc = ""
 			return v, textinput.Blink
 		case msg.String() == "?":
 			v.showHelpPopup = true
 			return v, nil
 		case key.Matches(msg, v.keys.Enter):
-			if item, ok := v.list.SelectedItem().(projectItem); ok {
+			if item, ok := v.list.SelectedItem().(boardItem); ok {
 				return v, func() tea.Msg {
-					return SelectedProject{Project: item.project}
+					return SelectedBoard{Board: item.board}
 				}
 			}
 		case key.Matches(msg, v.keys.Delete):
-			if item, ok := v.list.SelectedItem().(projectItem); ok {
+			if item, ok := v.list.SelectedItem().(boardItem); ok {
 				v.confirmingDelete = true
-				v.deleteTargetID = item.project.ID
-				v.deleteTargetName = item.project.Title
+				v.deleteTargetID = item.board.ID
+				v.deleteTargetName = item.board.Name
 				return v, nil
 			}
 		}
@@ -224,12 +202,12 @@ func (v *ProjectListView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return v, cmd
 }
 
-func (v *ProjectListView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (v *BoardListView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		if err := v.db.DeleteProject(v.deleteTargetID); err == nil {
+		if err := v.fizzy.DeleteBoard(v.deleteTargetID); err == nil {
 			v.confirmingDelete = false
-			return v, v.loadProjects
+			return v, v.loadBoards
 		}
 		v.confirmingDelete = false
 		return v, nil
@@ -240,36 +218,33 @@ func (v *ProjectListView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cm
 	return v, nil
 }
 
-func (v *ProjectListView) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (v *BoardListView) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		// Discard changes and close the form
 		v.confirmingDiscard = false
 		v.creating = false
 		return v, nil
 	case "s", "S":
-		// Save and close
 		v.confirmingDiscard = false
 		name := strings.TrimSpace(v.newName.Value())
 		if name != "" {
-			project, err := v.db.CreateProject(name, strings.TrimSpace(v.newDesc.Value()))
+			board, err := v.fizzy.CreateBoard(name)
 			if err == nil {
 				v.creating = false
 				return v, func() tea.Msg {
-					return SelectedProject{Project: *project}
+					return SelectedBoard{Board: *board}
 				}
 			}
 		}
 		return v, nil
 	case "n", "N", "esc":
-		// Cancel and return to creating
 		v.confirmingDiscard = false
 		return v, nil
 	}
 	return v, nil
 }
 
-func (v *ProjectListView) updateCreating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (v *BoardListView) updateCreating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, v.keys.Back):
 		if v.hasUnsavedChanges() {
@@ -282,76 +257,40 @@ func (v *ProjectListView) updateCreating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "ctrl+s":
 		name := strings.TrimSpace(v.newName.Value())
 		if name != "" {
-			project, err := v.db.CreateProject(name, strings.TrimSpace(v.newDesc.Value()))
+			board, err := v.fizzy.CreateBoard(name)
 			if err == nil {
 				v.creating = false
 				return v, func() tea.Msg {
-					return SelectedProject{Project: *project}
+					return SelectedBoard{Board: *board}
 				}
 			}
 		}
-		return v, nil
-
-	case msg.String() == "shift+tab":
-		v.focusIdx = (v.focusIdx + 2) % 3
-		v.updateFocus()
-		return v, nil
-
-	case key.Matches(msg, v.keys.Tab):
-		v.focusIdx = (v.focusIdx + 1) % 3
-		v.updateFocus()
 		return v, nil
 
 	case key.Matches(msg, v.keys.Enter):
-		if v.focusIdx == 0 || v.focusIdx == 1 {
-			v.focusIdx++
-			v.updateFocus()
-			return v, nil
-		}
-
-		if v.focusIdx == 2 {
-			name := strings.TrimSpace(v.newName.Value())
-			if name != "" {
-				project, err := v.db.CreateProject(name, strings.TrimSpace(v.newDesc.Value()))
-				if err == nil {
-					v.creating = false
-					return v, func() tea.Msg {
-						return SelectedProject{Project: *project}
-					}
+		name := strings.TrimSpace(v.newName.Value())
+		if name != "" {
+			board, err := v.fizzy.CreateBoard(name)
+			if err == nil {
+				v.creating = false
+				return v, func() tea.Msg {
+					return SelectedBoard{Board: *board}
 				}
 			}
-			return v, nil
 		}
+		return v, nil
 	}
 
 	var cmd tea.Cmd
-	switch v.focusIdx {
-	case 0:
-		v.newName, cmd = v.newName.Update(msg)
-	case 1:
-		v.newDesc, cmd = v.newDesc.Update(msg)
-	}
+	v.newName, cmd = v.newName.Update(msg)
 	return v, cmd
 }
 
-func (v *ProjectListView) updateFocus() {
-	v.newName.Blur()
-	v.newDesc.Blur()
-	switch v.focusIdx {
-	case 0:
-		v.newName.Focus()
-	case 1:
-		v.newDesc.Focus()
-	}
+func (v *BoardListView) hasUnsavedChanges() bool {
+	return v.newName.Value() != v.originalName
 }
 
-// hasUnsavedChanges checks if any form fields have been modified from their original values
-func (v *ProjectListView) hasUnsavedChanges() bool {
-	return v.newName.Value() != v.originalName || v.newDesc.Value() != v.originalDesc
-}
-
-// View renders the view
-func (v *ProjectListView) View() string {
+func (v *BoardListView) View() string {
 	if v.showHelpPopup {
 		return v.renderHelpPopup()
 	}
@@ -380,19 +319,18 @@ func (v *ProjectListView) View() string {
 	return styles.CenterView(content, v.width, v.height)
 }
 
-func (v *ProjectListView) renderEmpty() string {
+func (v *BoardListView) renderEmpty() string {
 	s := v.styles
 	contentWidth := styles.ContentWidth(v.width)
 
 	content := lipgloss.JoinVertical(lipgloss.Center,
-		s.Title.Render("No Projects"),
+		s.Title.Render("No Boards"),
 		"",
-		s.TitleMuted.Render("Press 'n' to create your first project"),
+		s.TitleMuted.Render("Press 'n' to create your first board"),
 		"",
-		s.ButtonPrimary.Render(" New Project "),
+		s.ButtonPrimary.Render(" New Board "),
 	)
 
-	// Center within content width, then center that in terminal
 	centered := lipgloss.Place(contentWidth, v.height,
 		lipgloss.Center, lipgloss.Center,
 		content,
@@ -400,41 +338,33 @@ func (v *ProjectListView) renderEmpty() string {
 	return styles.CenterView(centered, v.width, v.height)
 }
 
-func (v *ProjectListView) renderCreateForm() string {
+func (v *BoardListView) renderCreateForm() string {
 	s := v.styles
 	contentWidth := styles.ContentWidth(v.width)
 
 	nameStyle := s.Input
-	descStyle := s.Input
 	btnStyle := s.Button
 
 	switch v.focusIdx {
 	case 0:
 		nameStyle = s.InputFocused
 	case 1:
-		descStyle = s.InputFocused
-	case 2:
 		btnStyle = s.ButtonFocused
 	}
 
-	// Dynamic input width based on content width
 	inputWidth := clamp(contentWidth-6, 20, 50)
 
 	form := lipgloss.JoinVertical(lipgloss.Left,
-		s.Title.Render("New Project"),
+		s.Title.Render("New Board"),
 		"",
 		"Name:",
 		nameStyle.Width(inputWidth).Render(v.newName.View()),
 		"",
-		"Description:",
-		descStyle.Width(inputWidth).Render(v.newDesc.View()),
-		"",
 		btnStyle.Render(" Create "),
 		"",
-		s.TitleMuted.Render("Tab: next • Ctrl+S: save • Esc: cancel"),
+		s.TitleMuted.Render("↵: create • Esc: cancel"),
 	)
 
-	// Center within content width, then center that in terminal
 	centered := lipgloss.Place(contentWidth, v.height,
 		lipgloss.Center, lipgloss.Center,
 		form,
@@ -442,7 +372,7 @@ func (v *ProjectListView) renderCreateForm() string {
 	return styles.CenterView(centered, v.width, v.height)
 }
 
-func (v *ProjectListView) renderDiscardConfirm() string {
+func (v *BoardListView) renderDiscardConfirm() string {
 	s := v.styles
 	contentWidth := styles.ContentWidth(v.width)
 
@@ -466,9 +396,8 @@ func (v *ProjectListView) renderDiscardConfirm() string {
 	return styles.CenterView(centered, v.width, v.height)
 }
 
-func (v *ProjectListView) renderHelp() string {
+func (v *BoardListView) renderHelp() string {
 	contentWidth := styles.ContentWidth(v.width)
-	// At narrow widths, show hint to press ? for help
 	if contentWidth > 0 && contentWidth < 50 {
 		return v.styles.Help.Render(v.styles.HelpKey.Render("?") + " help")
 	}
@@ -482,14 +411,14 @@ func (v *ProjectListView) renderHelp() string {
 	)
 }
 
-func (v *ProjectListView) renderHelpPopup() string {
+func (v *BoardListView) renderHelpPopup() string {
 	s := v.styles
 	contentWidth := styles.ContentWidth(v.width)
 
 	helpItems := []string{
-		s.HelpKey.Render("↵") + "      select project",
-		s.HelpKey.Render("n") + "      new project",
-		s.HelpKey.Render("d") + "      delete project",
+		s.HelpKey.Render("↵") + "      select board",
+		s.HelpKey.Render("n") + "      new board",
+		s.HelpKey.Render("d") + "      delete board",
 		s.HelpKey.Render("q") + "      quit",
 		"",
 		s.TitleMuted.Render("Press any key to close"),
@@ -506,15 +435,13 @@ func (v *ProjectListView) renderHelpPopup() string {
 	return styles.CenterView(centered, v.width, v.height)
 }
 
-func (v *ProjectListView) renderDeleteConfirm() string {
+func (v *BoardListView) renderDeleteConfirm() string {
 	s := v.styles
 	contentWidth := styles.ContentWidth(v.width)
 
 	content := lipgloss.JoinVertical(lipgloss.Center,
-		s.Title.Foreground(styles.Current.Error).Render("Delete Project?"),
+		s.Title.Foreground(styles.Current.Error).Render("Delete Board?"),
 		"",
-		// s.TitleMuted.Render(fmt.Sprintf("Are you sure you want to delete \"%s\"?", v.deleteTargetName)),
-		// s.TitleMuted.Render("This will also delete all tasks in this project."),
 		"",
 		lipgloss.JoinHorizontal(lipgloss.Center,
 			s.ButtonPrimary.Render(" Y - Yes "),

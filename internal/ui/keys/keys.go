@@ -17,13 +17,12 @@ type KeyMap struct {
 	Tab   key.Binding
 
 	// Actions
-	New           key.Binding
-	Edit          key.Binding
-	Delete        key.Binding
-	Search        key.Binding
-	Filter        key.Binding
-	Help          key.Binding
-	ShowCompleted key.Binding
+	New    key.Binding
+	Edit   key.Binding
+	Delete key.Binding
+	Search key.Binding
+	Filter key.Binding
+	Help   key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -84,10 +83,6 @@ func DefaultKeyMap() KeyMap {
 		Help: key.NewBinding(
 			key.WithKeys("?"),
 			key.WithHelp("?", "help"),
-		),
-		ShowCompleted: key.NewBinding(
-			key.WithKeys("c"),
-			key.WithHelp("c", "show completed"),
 		),
 	}
 }
